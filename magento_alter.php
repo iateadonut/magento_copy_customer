@@ -2,13 +2,12 @@
 
 $mg = new magento_alter;
 
-$mg->copy_customer(13731);
+//TO COPY A CUSTOMER, SIMPLY DO SOMETHING LIKE THIS:
+$id_from_old_account = 1;
+$mg->copy_customer($id_from_old_account);
 
-//to copy a customer:
-//copy to temp tables
-//find next highest or highest + 10 of customer_entity.entity_id of target database
-//insert select from for primary keys
-
+//YOU'LL FIND THE ID FROM THE SOURCE ACCOUNT IN THE DATABASE IN customer_entity.entity_id
+//THIS SCRIPT WILL COPY A CUSTOMER AND ALL HIS ORDERS - IT ASSUMES THAT THE PRODUCTS OF THE TWO STORES ARE THE SAME
 
 
 class magento_alter
@@ -70,14 +69,14 @@ class magento_alter
 		
 
 		//FIND ALL TABLES WITH 2+ PRIMARY KEYS AND GET RID OF THEM
+		//IF THE PROGRAM EXITED ON THIS LOOP, A ROW HAS MORE THAN 1 PRIMARY KEY AND THIS CLASS IS NOT SET UP TO HANDLE IT YET
 		foreach ( $tables as $table_name=>$column_name )
 		{
 
 			if ( count( $primary_keys[$table_name] ) > 1 )
 			{
 				$result = $this->pdo_source->query('select count(*) from ' . $table_name . ' ')->fetchColumn();
-				
-				
+
 				$rowsInTableForCid = $this->pdo_source->query('select count(*) from ' . $table_name . ' where ' . $tables[$table_name] . ' = ' . $cid)->fetchColumn();
 				
 				if ( $rowsInTableForCid > 0 )
@@ -163,10 +162,227 @@ class magento_alter
 
 		}
 		
-		echo "DONE\n";
+		echo "DONE copying customer\n executing: \n \$mg->copy_sales(". $cid ." , " . $target_cid . ");\n";
+		$this->copy_sales( $cid, $target_cid );
 	
 	}
 
+
+	public function copy_sales( $old_cid, $new_cid )
+	{
+
+		$cid = $old_cid;
+
+		//GET TABLES WITH A FOREIGN KEY RESTRAINT TO THE sales_flat_order TABLE
+		$tables			= $this->get_sales_restraint_tables( $this->pdo_source );
+		
+		//$sales_tables['sales_flat_order'] = 'customer_id';
+		//print_r($tables);
+
+		//GET A LIST OF ALL THE PRIMARY KEYS IN EACH TABLE
+		$primary_keys			= $this->get_primary_keys($this->pdo_source);
+		
+		//FIND ALL TABLES WITH 2+ PRIMARY KEYS AND GET RID OF THEM
+		//IF THE PROGRAM EXITED ON THIS LOOP, A ROW HAS MORE THAN 1 PRIMARY KEY AND THIS CLASS IS NOT SET UP TO HANDLE IT YET
+		foreach ( $tables as $table_name=>$column_name )
+		{
+
+			if ( count( $primary_keys[$table_name] ) > 1 )
+			{
+			
+				$rowsInTableForCid = $this->pdo_source->query('select count(*) from ' . $table_name . ' where ' . $tables[$table_name] . ' = ' . $cid)->fetchColumn();
+				
+				if ( $rowsInTableForCid > 0 )
+				{
+					echo $table_name . ' has ' . count($primary_keys[$table_name]) . ' primary keys and ' . $result . ' rows' . "\n";
+					echo 'There are ' . $rowsInTableForCid . ' rows with the customer id as the value of the column ' . $tables[$table_name] ;
+					echo 'exiting, line ' . __LINE__. "\n";exit;
+				}
+
+			}
+
+		}
+		
+		//FIND ALL ORDERS FOR THIS CUSTOMER
+		$order_numbers = array();
+		$query_source = "select entity_id from sales_flat_order where customer_id = " . $old_cid;
+		foreach ( $this->pdo_source->query($query_source) as $row )
+		{
+			$order_numbers[] = $row['entity_id'];
+		}
+
+		foreach ( $order_numbers as $order_id )
+		{
+
+			//FIRST INSERT THE ORDER ROW INTO THE sales_flat_order TABLE
+			$query_source = "select * from sales_flat_order where entity_id = " . $order_id . ";";
+			
+			foreach ( $this->pdo_source->query($query_source) as $row )
+			{
+				
+				//UNSET THE PRIMARY KEY
+				$source_order_id = $row['entity_id'];
+				unset( $row['entity_id'] );
+				unset( $row['increment_id'] );
+				$row['customer_id'] = $new_cid;
+				
+				//GRAB AN increment_id
+				$query_increment_id = "select max(increment_id)+1 from sales_flat_order";
+				$increment_id = $this->pdo_target->query($query_increment_id)->fetchColumn();
+				$row['increment_id'] = $increment_id;
+				//echo $increment_id;exit;
+						
+				$query_target = "insert into sales_flat_order (" . implode(',', array_keys($row)) . ") values (" . implode(',', array_fill(0, count($row), '?')) . ")";
+				
+				//$query_target = "insert into sales_flat_order (" . implode(',', array_keys($row)) . ") values ('" . implode("', '", $row) . "')";
+				
+				//echo $query_target . "\n";
+				//print_r($row);
+				//exit;
+				//CREATE PARAMETERS FOR ->execute() CALL
+				$params = array();
+				foreach ( $row as $key=>$value)
+				{
+					$params[] = $value;
+				}
+				
+				//COMMENT IN AFTER TESTING
+				//*
+				$st	= $this->pdo_target->prepare($query_target);
+				$st->execute( $params );
+				
+				//print_r ( $this->pdo_target->errorInfo() );
+				
+				$target_order_id = $this->pdo_target->lastInsertId();
+				//*/
+				//$target_order_id = 10699;
+				
+				echo "Order Inserted to target with entity_id = " . $target_order_id . "\n";
+			
+				//RETURN THE last_insert_id AND USE IT FOR THE OTHER TABLES
+
+				echo $new_cid . "-target db customer_id " . $target_order_id . "-target database order id\n";
+
+				//THESE ARE TABLES WE CAN WORK WITH
+				foreach ( $tables as $table_name=>$column_name )
+				{
+
+					echo $table_name . " " . $column_name . "\n";
+					//GET ROWS FROM SOURCE WHERE THE SOURCE order id IS PRESENT
+					$query_source = "select * from " . $table_name . " where " . $column_name . " = " . $source_order_id . ";";
+					//echo $query_source . "\n";
+							
+					foreach ( $this->pdo_source->query($query_source) as $row2 )
+					{
+						
+						//print_r($row2);
+						
+						//GET RID OF THE PRIMARY KEY
+						unset( $row2[$primary_keys[$table_name][0]] );
+						//REPLACE FOREIGN RESTRAINT WITH THE NEW CLIENT ID
+						$row2[$column_name] = $target_order_id;
+						
+						//print_r($row2);exit;
+						
+						$query_target = "insert into " . $table_name . " (" . implode(',', array_keys($row2)) . ") values (" . implode(',', array_fill(0, count($row2), '?')) . ")";
+						
+						//echo $query_target . "\n";
+						//print_r($row2);
+						//CREATE PARAMETERS FOR ->execute() CALL
+						$params = array();
+						foreach ( $row2 as $key=>$value)
+						{
+							$params[] = $value;
+						}
+						
+						$st	= $this->pdo_target->prepare($query_target);
+						$st->execute( $params );
+					
+						//exit;
+						
+					}
+
+				}
+				
+			}
+
+			echo "DONE WITH order id " . $target_order_id . "\n";
+		
+		}
+		
+		echo "DONE\n";
+
+	}
+
+
+
+
+	//FIND TABLES THAT HAVE FOREIGN RESTRAINT TO THE $table IN QUESTION
+	public function get_restraint_tables( $table, $pdo )
+	{
+		
+		$query = "select table_name, column_name, referenced_table_name, referenced_column_name from information_schema.key_column_usage where referenced_table_name = '" . $table . "';";
+		//echo $query . "\n";
+
+		$tables = array();
+		foreach( $pdo->query($query) as $row )
+		{
+			$tables[$row['table_name']] = $row['column_name'];
+			//echo $row['table_name'] . " " . $row['column_name'] . " " . $row['referenced_table_name'] . " " . $row['referenced_column_name'] . "\n";
+			if ( 'entity_id' != $row['referenced_column_name'] || $table != $row['referenced_table_name'] )
+			{
+				echo 'Line: ' . __LINE__ . ' refers to ' . $row['referenced_table_name'] . '.' . $row['referenced_column_name'] . ' instead of ' . $table . '.entity_id' . "\n";die();
+			}
+		}
+		return $tables;		
+		
+	}
+	
+	public function get_customer_restraint_tables( $pdo )
+	{
+		return $this->get_restraint_tables( 'customer_entity', $pdo );	
+	}
+
+	public function get_sales_restraint_tables( $pdo )
+	{
+		return $this->get_restraint_tables( 'sales_flat_order', $pdo );
+	}
+
+
+	public function get_customer_id_tables( $pdo )
+	{
+
+		//FIND ALL TABLES WITH THE COLUMN customer_id
+		$query = "select table_name, column_name from information_schema.columns where column_name = 'customer_id'";
+		$tables2 = array();
+		foreach( $pdo->query($query) as $row )
+		{
+			$tables2[$row['table_name']] = $row['column_name'];
+		}
+		return $tables2;
+
+	}
+	
+	public function get_primary_keys( $pdo )
+	{
+
+		$query = "select table_name, column_name from information_schema.key_column_usage where CONSTRAINT_NAME = 'PRIMARY'";
+		$tables2 = array();
+		foreach( $pdo->query($query) as $row )
+		{
+			$tables2[$row['table_name']][] = $row['column_name'];
+		}
+		return $tables2;
+	}
+	
+
+
+
+
+
+
+
+	//v1 METHODS THAT MIGHT BE USEFUL SOMETIME
 
 	public function model_alter( $tables )
 	{
@@ -207,67 +423,6 @@ class magento_alter
 		}
 		
 	}
-
-	//FIND TABLES THAT HAVE FOREIGN RESTRAINT TO THE $table IN QUESTION
-	public function get_restraint_tables( $table, $pdo )
-	{
-		
-		$query = "select table_name, column_name, referenced_table_name, referenced_column_name from information_schema.key_column_usage where referenced_table_name = '" . $table . "';";
-		//echo $query . "\n";
-
-		$tables = array();
-		foreach( $pdo->query($query) as $row )
-		{
-			$tables[$row['table_name']] = $row['column_name'];
-			//echo $row['table_name'] . " " . $row['column_name'] . " " . $row['referenced_table_name'] . " " . $row['referenced_column_name'] . "\n";
-			if ( 'entity_id' != $row['referenced_column_name'] || $table != $row['referenced_table_name'] )
-			{
-				echo 'Line: ' . __LINE__ . ' refers to ' . $row['referenced_table_name'] . '.' . $row['referenced_column_name'] . ' instead of ' . $table . '.entity_id' . "\n";die();
-			}
-		}
-		return $tables;		
-		
-	}
-	
-	public function get_customer_restraint_tables( $pdo )
-	{
-		return $this->get_restraint_tables( 'customer_entity', $pdo );	
-	}
-
-	public function get_sales_restraint_tables( $pdo )
-	{
-		return $this->get_restraint_tables( 'sales_flat_order', $pdo );
-	}
-
-
-	
-	public function get_customer_id_tables( $pdo )
-	{
-
-		//FIND ALL TABLES WITH THE COLUMN customer_id
-		$query = "select table_name, column_name from information_schema.columns where column_name = 'customer_id'";
-		$tables2 = array();
-		foreach( $pdo->query($query) as $row )
-		{
-			$tables2[$row['table_name']] = $row['column_name'];
-		}
-		return $tables2;
-
-	}
-	
-	public function get_primary_keys( $pdo )
-	{
-
-		$query = "select table_name, column_name from information_schema.key_column_usage where CONSTRAINT_NAME = 'PRIMARY'";
-		$tables2 = array();
-		foreach( $pdo->query($query) as $row )
-		{
-			$tables2[$row['table_name']][] = $row['column_name'];
-		}
-		return $tables2;
-	}
-	
-
 
 
 	public function change_cid( $from_id, $to_id )
@@ -323,108 +478,6 @@ class magento_alter
 			print_r( $stmt->errorInfo() );
 		}
 	}
-
-
-	//CHANGE PRIMARY KEYS OF ALL SALES RELATED TABLES
-	public function sales_change_primary_keys( $add_increment = 10000 )
-	{
-		$tables = $this->get_sales_restraint_tables();
-		
-		$primary_keys = $this->get_primary_keys();
-		
-		//$orders = '( ' . implode( ',', $order_ids) . ' )';
-		
-		
-		$fields = array_unique ( $tables );
-		foreach ( $fields as $field )
-		{
-
-
-			echo $field . "--\n";
-			
-			$tables2 = '';
-			foreach ( $tables as $table_name=>$column_name )
-			{
-				if ( $column_name == $field )
-				{
-					//echo $table_name . "\n";
-					//DON'T TOUCH IF TWO PRIMARY KEYS
-					if ( count( $primary_keys[$table_name] ) > 1 )
-					{
-						$result = $this->pdo->query('select count(*) from ' . $table_name . ' ')->fetchColumn();
-						echo $table_name . ' has two primary keys and ' . $result . ' rows' . "\n";
-						if ( $result != 0 ) { exit; }
-						
-					} else {
-						
-						//IF THE PRIMARY KEY IS THE SAME AS THE RESTRAINING KEY, DON'T TOUCH
-						if ( $primary_keys[$table_name][0] == $field )
-						{
-							
-						} else {
-							echo $table_name . ' ' . $primary_keys[$table_name][0] . ' ' . $field . "\n";
-							$this->pdo->query('update ' . $table_name . ' set ' . $primary_keys[$table_name][0] . ' = ' . $primary_keys[$table_name][0] . ' + ' . $add_increment );
-					
-						}
-					}
-				}
-			}
-		}		
-	}
-
-
-
-	//CHANGE PRIMARY KEYS OF ALL SALES RELATED TABLES
-	public function customers_change_primary_keys( $add_increment = 1000 )
-	{
-		$tables = $this->get_customer_restraint_tables();
-		
-		$primary_keys = $this->get_primary_keys();
-		
-		//$orders = '( ' . implode( ',', $order_ids) . ' )';
-		
-		
-		$fields = array_unique ( $tables );
-		foreach ( $fields as $field )
-		{
-
-			echo $field . "--\n";
-			
-			$tables2 = '';
-			foreach ( $tables as $table_name=>$column_name )
-			{
-				if ( $column_name == $field )
-				{
-					//echo $table_name . "\n";
-					//DON'T TOUCH IF TWO PRIMARY KEYS
-					if ( count( $primary_keys[$table_name] ) > 1 )
-					{
-						$result = $this->pdo->query('select count(*) from ' . $table_name . ' ')->fetchColumn();
-						echo $table_name . ' has two primary keys and ' . $result . ' rows' . "\n";
-						//if ( $result != 0 ) { exit; }
-						
-					} else {
-						
-						//IF THE PRIMARY KEY IS THE SAME AS THE RESTRAINING KEY, DON'T TOUCH
-						if ( $primary_keys[$table_name][0] == $field )
-						{
-							
-						} else {
-							echo $table_name . ' ' . $primary_keys[$table_name][0] . ' ' . $field . "\n";
-							$query = 'select max(' . $primary_keys[$table_name][0] . ') from ' . $table_name;
-							$max_id = $this->pdo->query($query)->fetchColumn();
-							
-							$query = 'update ' . $table_name . ' set ' . $primary_keys[$table_name][0] . ' = ' . $max_id . ' + ' . $add_increment;
-							echo $query . "\n";
-							$this->pdo->query( $query );
-					
-						}
-					}
-				}
-			}
-		}		
-	}
-
 
 
 
