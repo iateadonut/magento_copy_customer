@@ -2,7 +2,7 @@
 
 $mg = new magento_alter;
 
-
+$mg->copy_customer(1);
 
 //to copy a customer:
 //copy to temp tables
@@ -38,6 +38,26 @@ class magento_alter
 		$this->pdo_source->query($query);		
 		
 	}
+
+
+	public function copy_customer( $cid )
+	{
+		
+		//SHOULD FIRST CHECK THAT BOTH MAGENTO DATABASES ARE THE SAME
+		
+		//GET TABLES WITH A FOREIGN KEY RESTRAINT TO THE customer_entity TABLE
+		$cust_restraint_tables	= $this->get_customer_restraint_tables($this->pdo_source);
+		
+		//GET TABLES WITH THE COLUMN customer_id THAT ARE NOT FOREIGN KEY RESTRAINT TABLES
+		$cust_id_tables			= array_diff_assoc( $this->get_customer_id_tables($this->pdo_source), $cust_restraint_tables  );
+
+		print_r($cust_restraint_tables);
+		print_r($cust_id_tables);
+		
+		echo count( $cust_restraint_tables ) . " " . count( $cust_id_tables ) . "\n";
+		
+	}
+
 
 	public function model_alter( $tables )
 	{
@@ -82,12 +102,12 @@ class magento_alter
 	/*
 	 *FIND ALL TABLES THAT HAVE A FOREIGN KEY RESTRAINT ON customer_entity 
 	*/
-	public function get_customer_restraint_tables()
+	public function get_customer_restraint_tables( $pdo )
 	{
 		$query = "select table_name, column_name, referenced_table_name, referenced_column_name from information_schema.key_column_usage where referenced_table_name = 'customer_entity';";
 
 		$tables = array();
-		foreach( $this->pdo->query($query) as $row )
+		foreach( $pdo->query($query) as $row )
 		{
 			$tables[$row['table_name']] = $row['column_name'];
 			//echo $row['table_name'] . " " . $row['column_name'] . " " . $row['referenced_table_name'] . " " . $row['referenced_column_name'] . "\n";
@@ -100,13 +120,13 @@ class magento_alter
 		
 	}
 	
-	public function get_customer_id_tables()
+	public function get_customer_id_tables( $pdo )
 	{
 
 		//FIND ALL TABLES WITH THE COLUMN customer_id
 		$query = "select table_name, column_name from information_schema.columns where column_name = 'customer_id'";
 		$tables2 = array();
-		foreach( $this->pdo->query($query) as $row )
+		foreach( $pdo->query($query) as $row )
 		{
 			$tables2[$row['table_name']] = $row['column_name'];
 		}
@@ -127,51 +147,7 @@ class magento_alter
 	}
 	
 
-	/*
-	 * CREATES COMMANDS TO GRAB CUSTOMERS FROM ANOTHER SERVER
-	 */
-	public function grab_import_customer_commands( array $cids )
-	{
-		//CREATE COMMANDS TO GRAB DATA FROM OTHER SERVER
-		$tables = $this->get_customer_restraint_tables();
-		
-		$cids2 = '( ' . implode( ',', $cids ) . ' )';
-		
-		$fields = array_unique ( $tables );
-		foreach ( $fields as $field )
-		{
-			//if ( 'customer_id' != $field )
-			//{
-				echo $field . "\n";
-				
-				$tables2 = '';
-				foreach ( $tables as $table_name=>$column_name )
-				{
-					if ( $column_name == $field )
-					{
-					$tables2 .= $table_name . ' ';
-					}
-				}
-				$command = 'ssh deskliv@198.1.92.2 \'mysqldump deskliv_magento ' . $tables2 . ' --where="' . $field . ' in ' . $cids2 . '"  --no-create-info\' | mysql deskliv_magento';
-				echo $command . "\n";
-			//}
-		}
-		
-		//NEXT SHOULD FIND ORDERS FROM THIS CUSTOMER AND THEN RUN $this->grab_import_order_commands INSTEAD
-		/*
-		$tables_customer_id = $this->get_customer_id_tables();
-		//print_r($tables2);
-		$tables2 = '';
-		foreach ( $tables_customer_id as $table_name=>$column_name )
-		{
-			$tables2 .= $table_name . ' ';
-		}
-		$command = 'ssh deskliv@198.1.92.2 \'mysqldump deskliv_magento ' . $tables2 . ' --where="customer_id in ' . $cids2 . '" --replace --no-create-info\' | mysql deskliv_magento';
-		echo $command . "\n";
-		*/
-		//exit;
 
-	}
 
 	public function change_cid( $from_id, $to_id )
 	{
@@ -332,48 +308,6 @@ class magento_alter
 
 
 
-	public function grab_import_sales_commands( array $order_ids )
-	{
-		//CREATE COMMANDS TO GRAB DATA FROM OTHER SERVER
-		$tables = $this->get_sales_restraint_tables();
-		
-		$orders = '( ' . implode( ',', $order_ids) . ' )';
-		
-		$fields = array_unique ( $tables );
-		foreach ( $fields as $field )
-		{
-			//if ( 'order_id' != $field )
-			//{
-				echo $field . "\n";
-				
-				$tables2 = '';
-				foreach ( $tables as $table_name=>$column_name )
-				{
-					if ( $column_name == $field )
-					{
-					$tables2 .= $table_name . ' ';
-					}
-				}
-				$command = 'ssh deskliv@198.1.92.2 \'mysqldump deskliv_magento ' . $tables2 . ' --where="' . $field . ' in  ' . $orders . ' "  --no-create-info\' | mysql deskliv_magento';
-				echo $command . "\n";
-			//}
-		}
-		
-		/*
-		$tables_order_id = $this->get_order_id_tables();
-		//print_r($tables2);
-		$tables2 = '';
-		foreach ( $tables_order_id as $table_name=>$column_name )
-		{
-			$tables2 .= $table_name . ' ';
-		}
-		$command = 'ssh deskliv@198.1.92.2 \'mysqldump deskliv_magento ' . $tables2 . ' --where="order_id in  ' . $orders . ' " --replace --no-create-info\' | mysql deskliv_magento';
-		echo "order_id\n";
-		echo $command . "\n";
-		*/
-		//exit;
-
-	}
 
 	public function get_sales_restraint_tables()
 	{
